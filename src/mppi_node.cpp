@@ -8,7 +8,8 @@ int main(int argc, char* argv[]) {
     rclcpp::init(argc, argv);
     rosFunctions ros;
 
-    track_handler = new TrackHandler(MAP_CENTERLINE_FILE, MAP_YAML_FILE);
+    TrackHandler* track_handler = new TrackHandler(MAP_CENTERLINE_FILE, MAP_YAML_FILE);
+    trajectory current_trajectory;
 
     auto last_execution = std::chrono::steady_clock::now();
     auto control_period = std::chrono::milliseconds(50); // 50ms per step
@@ -25,7 +26,7 @@ int main(int argc, char* argv[]) {
         if(now - last_execution >= control_period) {
             
             if(trajectory_index >= PREDICTION_HORIZON) {
-                // Time the trajectory generation
+                // time the trajectory generation
                 auto gen_start = std::chrono::steady_clock::now();
                 
                 auto all_trajs = generate_trajectories_and_costs(state);
@@ -36,7 +37,6 @@ int main(int argc, char* argv[]) {
                     gen_end - gen_start
                 ).count();
                 
-                // Print with formatting
                 ros.print(std::format(
                     "gen complete, took {}ms for {} trajectories", 
                     gen_ms, NUM_TRAJECTORIES
