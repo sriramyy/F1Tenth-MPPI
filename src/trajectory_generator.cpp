@@ -24,7 +24,6 @@ all_trajectories generate_trajectories_and_costs(carState state) {
 
     // copy results back here (CPU)
     float* h_costs = new float[NUM_TRAJECTORIES];
-    float* h_states = new float[NUM_TRAJECTORIES * PREDICTION_HORIZON * 4];
     float* h_noise = new float[NUM_TRAJECTORIES * PREDICTION_HORIZON * 2];
 
     cudaMemcpy(h_costs, dev.d_costs, NUM_TRAJECTORIES * sizeof(float), cudaMemcpyDeviceToHost);
@@ -49,7 +48,6 @@ all_trajectories generate_trajectories_and_costs(carState state) {
     
     // delete the original
     delete[] h_costs;
-    delete[] h_states;
     delete[] h_noise;
     free_device_memory(dev);
     

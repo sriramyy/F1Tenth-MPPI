@@ -1,37 +1,21 @@
-#include "trajectory_generator.cuh"
-#include "mppi_node.h"
-#include <curand_kernel.h>
+// Updated header for device memory to include collision flags
+struct device_trajectories {
+    float* d_noise;           
+    float* d_states;          
+    float* d_costs;           
+    bool* d_collision_flags;  // NEW: track which trajectories collided
+};
 
-// Constants for GPU
-#define THREADS_PER_BLOCK 256
-
-// Noise generation kernel
-__global__ void generate_noise_kernel(float* d_noise, int num_trajs, int horizon) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= num_trajs * horizon * 2) return;
-    
-    // Simple uniform random for now (replace with curand for better randomness)
-    curandState state;
-    curand_init(clock64(), idx, 0, &state);
-    
-    int traj_id = idx / (horizon * 2);
-    int param_id = idx % (horizon * 2);
-    
-    if(param_id % 2 == 0) {
-        // Steering noise
-        d_noise[idx] = curand_normal(&state) * RANDOM_STEERING;
-    } else {
-        // Acceleration noise
-        d_noise[idx] = curand_normal(&state) * RANDOM_ACCEL;
-    }
-}
-
-// Dynamics simulation + cost calculation kernel
+// Updated kernel with early termination
 __global__ void simulate_and_cost_kernel(
     float* d_noise,
     float* d_states,
     float* d_costs,
+    bool* d_collision_flags,
     float init_x, float init_y, float init_theta, float init_v,
+    float* d_centerline_x, 
+    float* d_centerline_y,
+    int centerline_size,
     int num_trajs,
     int horizon
 ) {
@@ -41,14 +25,24 @@ __global__ void simulate_and_cost_kernel(
     // Initialize state
     float x = init_x, y = init_y, theta = init_theta, v = init_v;
     float total_cost = 0.0f;
-    float dt = 0.01f;  // timestep
-    float L = 0.33f;   // wheelbase (F1TENTH typical)
+    float dt = 0.01f;
+    float L = 0.33f;
+    bool collision_detected = false;
     
     for(int t = 0; t < horizon; t++) {
-        // Get control inputs (noise)
+        // If collision already detected, skip remaining timesteps
+        if(collision_detected) {
+            break;  // Early exit from loop
+        }
+        
+        // get the control inputs
+        
+        float ref_steering = 0.0f; // zero control ref
+        float ref_accel = 0.0f;    // zero control ref 
+
         int noise_idx = traj_id * horizon * 2 + t * 2;
-        float steering = d_noise[noise_idx];
-        float accel = d_noise[noise_idx + 1];
+        float steering = ref_steering + d_noise[noise_idx];
+        float accel = ref_accel + d_noise[noise_idx + 1];
         
         // Kinematic bicycle model
         x += v * cosf(theta) * dt;
@@ -66,12 +60,15 @@ __global__ void simulate_and_cost_kernel(
         d_states[state_idx + 2] = theta;
         d_states[state_idx + 3] = v;
         
-        // Compute cost (simplified for now)
+        // Compute cost
         float step_cost = 0.0f;
         
-        // Rough collision detection (bounds check)
+        // Collision detection with early termination
         if(x < -5.0f || x > 5.0f || y < -5.0f || y > 5.0f) {
-            step_cost += W_COLLISION * 100.0f;
+            // Assign massive penalty and mark collision
+            total_cost += W_COLLISION * 10000.0f;  // Huge penalty
+            collision_detected = true;
+            break;  // Stop simulating this trajectory
         }
         
         // Control smoothness
@@ -84,40 +81,54 @@ __global__ void simulate_and_cost_kernel(
     }
     
     d_costs[traj_id] = total_cost;
+    d_collision_flags[traj_id] = collision_detected;  // Store flag
+
+    // compute centerline distance
+    float min_centerline_dist = 1e6;
+    for(int i = 0; i < centerline_size; i++) {
+        float dist = sqrtf((x - d_centerline_x[i]) * (x - d_centerline_x[i]) + 
+                          (y - d_centerline_y[i]) * (y - d_centerline_y[i]));
+        min_centerline_dist = fminf(min_centerline_dist, dist);
+    }
+    
+    step_cost += W_TRACK * min_centerline_dist;
 }
 
-// Allocate GPU memory
+// Update memory allocation
 device_trajectories allocate_device_memory() {
     device_trajectories dev;
     size_t noise_size = NUM_TRAJECTORIES * PREDICTION_HORIZON * 2 * sizeof(float);
     size_t states_size = NUM_TRAJECTORIES * PREDICTION_HORIZON * 4 * sizeof(float);
     size_t costs_size = NUM_TRAJECTORIES * sizeof(float);
+    size_t flags_size = NUM_TRAJECTORIES * sizeof(bool);  // NEW
     
     cudaMalloc(&dev.d_noise, noise_size);
     cudaMalloc(&dev.d_states, states_size);
     cudaMalloc(&dev.d_costs, costs_size);
+    cudaMalloc(&dev.d_collision_flags, flags_size);  // NEW
     
     return dev;
 }
 
-// Free GPU memory
+// Update memory freeing
 void free_device_memory(device_trajectories& dev) {
     cudaFree(dev.d_noise);
     cudaFree(dev.d_states);
     cudaFree(dev.d_costs);
+    cudaFree(dev.d_collision_flags);  // NEW
 }
 
-// Run the full GPU pipeline
+// Update GPU pipeline
 void run_gpu_pipeline(device_trajectories& dev, carState state) {
     int blocks = (NUM_TRAJECTORIES * PREDICTION_HORIZON * 2 + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     generate_noise_kernel<<<blocks, THREADS_PER_BLOCK>>>(dev.d_noise, NUM_TRAJECTORIES, PREDICTION_HORIZON);
     
     blocks = (NUM_TRAJECTORIES + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     simulate_and_cost_kernel<<<blocks, THREADS_PER_BLOCK>>>(
-        dev.d_noise, dev.d_states, dev.d_costs,
+        dev.d_noise, dev.d_states, dev.d_costs, dev.d_collision_flags,  // NEW param
         state.x, state.y, state.theta, state.v,
         NUM_TRAJECTORIES, PREDICTION_HORIZON
     );
     
-    cudaDeviceSynchronize();  // Wait for GPU to finish
+    cudaDeviceSynchronize();
 }

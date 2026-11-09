@@ -14,9 +14,15 @@ const float W_TRACK      {10.0};
 const float W_CONTROL    {0.5}; 
 const float W_SPEED      {5.0};
 
-//
+// trajectory averaging
 const int TOP_TRAJECTORIES_NUM {50}; // number of trajectories to choose when averaging the final trajectory
 
-//
+// map configuration
+const std::string MAP_NAME {"Spielberg_map"};
+const std::string MAP_DIR  {"maps/"};
+// should not need to change these, only change the above two configs
+const std::string MAP_YAML_FILE {MAP_DIR + MAP_NAME + ".yaml"};
+const std::string MAP_PNG_FILE  {MAP_DIR + MAP_NAME + ".png"};
+const std::string MAP_CENTERLINE_FILE {MAP_DIR + MAP_NAME + ".csv"};
 
 int main();
